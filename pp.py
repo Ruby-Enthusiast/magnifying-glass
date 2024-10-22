@@ -4,6 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 import csv
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 class ToolTip:
     def __init__(self, widget, text):
@@ -35,6 +36,34 @@ class ToolTip:
 
 scraping_thread = None
 
+def scrape_page(i, target_user_id, gallery_id, base_url, base_article_url, headers):
+    try:
+        params = {'id': gallery_id, 'page': i}
+        session = requests.Session()  # Use a session for faster repeated requests
+        response = session.get(base_url, params=params, headers=headers)
+        soup = BeautifulSoup(response.content, 'html.parser')
+
+        if soup.find('tbody') is None:
+            return []
+
+        article_list = soup.find('tbody').find_all('tr')
+        results = []
+
+        for tr_item in article_list:
+            user_tag = tr_item.find('td', {'class': 'gall_writer'})
+            if user_tag and user_tag.get('data-uid') == target_user_id:
+                title_tag = tr_item.find('a', href=True)
+                if title_tag:
+                    title = title_tag.text.strip()
+                    link = base_article_url + title_tag['href']
+                    results.append([title, link])
+
+        return results
+
+    except Exception as e:
+        print(f"Error on page {i}: {e}")
+        return []
+
 def start_scraping():
     try:
         target_user_id = user_id_entry.get()
@@ -49,33 +78,33 @@ def start_scraping():
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         }
 
+        results = []
+        num_workers = 10  # Number of threads (increase for faster results)
+        log_text.insert(tk.END, f"{num_workers}개 쓰레드로 스크레이핑 중...\n")
+
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = [
+                executor.submit(scrape_page, i, target_user_id, gallery_id, base_url, base_article_url, headers)
+                for i in range(start_page, end_page + 1)
+            ]
+            for future in futures:
+                page_results = future.result()
+                results.extend(page_results)
+                log_text.insert(tk.END, f"{start_page + futures.index(future)} 페이지를 탐색했습니다.\n")
+                log_text.see(tk.END)
+
+        # Write to CSV after all pages are processed
         with open('search_result.csv', mode='w', newline='', encoding='utf-8') as file:
             writer = csv.writer(file)
             writer.writerow(['제목', '주소'])
+            writer.writerows(results)
 
-            for i in range(start_page, end_page + 1):
-                params = {'id': gallery_id, 'page': i}
-
-                response = requests.get(base_url, params=params, headers=headers)
-                soup = BeautifulSoup(response.content, 'html.parser')
-                article_list = soup.find('tbody').find_all('tr')
-
-                for tr_item in article_list:
-                    user_tag = tr_item.find('td', {'class': 'gall_writer'})
-                    if user_tag and user_tag.get('data-uid') == target_user_id:
-                        title_tag = tr_item.find('a', href=True)
-                        title = title_tag.text.strip()
-                        link = base_article_url + title_tag['href']
-                        writer.writerow([title, link])
-
-                log_text.insert(tk.END, f"{i} 페이지를 탐색했습니다.\n")
-                log_text.see(tk.END)
-            
         messagebox.showinfo(
             "완료", 
             "검색 결과를 search_result.csv 파일로 저장하였습니다. \n"
             "만약 인코딩 오류로 글자가 깨졌다면 메모장 프로그램으로 열어봐 주세요."
-            )
+        )
+
     except Exception as e:
         messagebox.showerror("오류", str(e))
     finally:
